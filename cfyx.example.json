@@ -1,0 +1,9 @@
+{
+  "cf_api_token": "",
+  "cf_zone_id": "",
+  "cf_base_domain": "",
+  "cf_proxied": true,
+  "github_token": "",
+  "github_repo": "",
+  "github_file_path": "cfyx.txt"
+}

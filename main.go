@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/XIU2/CloudflareSpeedTest/task"
@@ -15,6 +18,7 @@ import (
 
 var (
 	version, versionNew string
+	inputReader         = bufio.NewReader(os.Stdin)
 )
 
 func init() {
@@ -25,8 +29,9 @@ CloudflareSpeedTest ` + version + `
 https://github.com/XIU2/CloudflareSpeedTest
 
 参数：
+    无参数运行时会进入交互式配置，提示选择测速模式并输入参数，按 ENTER 使用默认值。
     -n 200
-        延迟测速线程；越多延迟测速越快，性能弱的设备 (如路由器) 请勿太高；(默认 200 最多 1000)
+        延迟测速线程；越多延迟测速越快，性能弱的设备 (如路由器) 请勿太高；(默认 200 最多 1000，HTTPing 模式默认 100)
     -t 4
         延迟测速次数；单个 IP 延迟测速的次数；(默认 4 次)
     -dn 10
@@ -35,7 +40,7 @@ https://github.com/XIU2/CloudflareSpeedTest
         下载测速时间；单个 IP 下载测速最长时间，不能太短；(默认 10 秒)
     -tp 443
         指定测速端口；延迟测速/下载测速时使用的端口；(默认 443 端口)
-    -url https://cf.xiu2.xyz/url
+    -url https://speed.cloudflare.com/__down?bytes=99000000
         指定测速地址；延迟测速(HTTPing)/下载测速时使用的地址，默认地址不保证可用性，建议自建；
 
     -httping
@@ -46,13 +51,13 @@ https://github.com/XIU2/CloudflareSpeedTest
         匹配指定地区；IATA 机场地区码或国家/城市码，英文逗号分隔，仅 HTTPing 模式可用；(默认 所有地区)
 
     -tl 200
-        平均延迟上限；只输出低于指定平均延迟的 IP，各上下限条件可搭配使用；(默认 9999 ms)
+        平均延迟上限；只输出低于指定平均延迟的 IP，各上下限条件可搭配使用；(默认 200 ms)
     -tll 40
-        平均延迟下限；只输出高于指定平均延迟的 IP；(默认 0 ms)
+        平均延迟下限；只输出高于指定平均延迟的 IP；(默认 40 ms)
     -tlr 0.2
-        丢包几率上限；只输出低于/等于指定丢包率的 IP，范围 0.00~1.00，0 过滤掉任何丢包的 IP；(默认 1.00)
+        丢包几率上限；只输出低于/等于指定丢包率的 IP，范围 0.00~1.00，0 过滤掉任何丢包的 IP；(默认 0.20)
     -sl 5
-        下载速度下限；只输出高于指定下载速度的 IP，凑够指定数量 [-dn] 才会停止测速；(默认 0.00 MB/s)
+        下载速度下限；只输出高于指定下载速度的 IP，凑够指定数量 [-dn] 才会停止测速；(默认 5.00 MB/s)
 
     -p 10
         显示结果数量；测速后直接显示指定数量的结果，为 0 时不显示结果直接退出；(默认 10 个)
@@ -83,16 +88,16 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.IntVar(&task.TestCount, "dn", 10, "下载测速数量")
 	flag.IntVar(&downloadTime, "dt", 10, "下载测速时间")
 	flag.IntVar(&task.TCPPort, "tp", 443, "指定测速端口")
-	flag.StringVar(&task.URL, "url", "https://cf.xiu2.xyz/url", "指定测速地址")
+	flag.StringVar(&task.URL, "url", "https://speed.cloudflare.com/__down?bytes=99000000", "指定测速地址")
 
 	flag.BoolVar(&task.Httping, "httping", false, "切换测速模式")
 	flag.IntVar(&task.HttpingStatusCode, "httping-code", 0, "有效状态代码")
 	flag.StringVar(&task.HttpingCFColo, "cfcolo", "", "匹配指定地区")
 
-	flag.IntVar(&maxDelay, "tl", 9999, "平均延迟上限")
-	flag.IntVar(&minDelay, "tll", 0, "平均延迟下限")
-	flag.Float64Var(&maxLossRate, "tlr", 1, "丢包几率上限")
-	flag.Float64Var(&task.MinSpeed, "sl", 0, "下载速度下限")
+	flag.IntVar(&maxDelay, "tl", 200, "平均延迟上限")
+	flag.IntVar(&minDelay, "tll", 40, "平均延迟下限")
+	flag.Float64Var(&maxLossRate, "tlr", 0.2, "丢包几率上限")
+	flag.Float64Var(&task.MinSpeed, "sl", 5, "下载速度下限")
 
 	flag.IntVar(&utils.PrintNum, "p", 10, "显示结果数量")
 	flag.StringVar(&task.IPFile, "f", "ip.txt", "IP段数据文件")
@@ -107,6 +112,12 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.BoolVar(&printVersion, "v", false, "打印程序版本")
 	flag.Usage = func() { fmt.Print(help) }
 	flag.Parse()
+	routinesSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "n" {
+			routinesSet = true
+		}
+	})
 
 	if task.MinSpeed > 0 && time.Duration(maxDelay)*time.Millisecond == utils.InputMaxDelay {
 		utils.Yellow.Println("[提示] 在使用 [-sl] 参数时，建议搭配 [-tl] 参数，以避免因凑不够 [-dn] 数量而一直测速...")
@@ -116,6 +127,9 @@ https://github.com/XIU2/CloudflareSpeedTest
 	utils.InputMaxLossRate = float32(maxLossRate)
 	task.Timeout = time.Duration(downloadTime) * time.Second
 	task.HttpingCFColomap = task.MapColoMap()
+	if task.Httping && !routinesSet {
+		task.Routines = 100
+	}
 
 	if printVersion {
 		println(version)
@@ -133,7 +147,11 @@ https://github.com/XIU2/CloudflareSpeedTest
 func main() {
 	task.InitRandSeed() // 置随机数种子
 
-	fmt.Printf("# XIU2/CloudflareSpeedTest %s \n\n", version)
+	ensureUploadConfigFile()
+
+	if flag.NFlag() == 0 && flag.NArg() == 0 {
+		interactiveConfig()
+	}
 
 	// 开始延迟测速 + 过滤延迟/丢包
 	pingData := task.NewPing().Run().FilterDelay().FilterLossRate()
@@ -141,7 +159,80 @@ func main() {
 	speedData := task.TestDownloadSpeed(pingData)
 	utils.ExportCsv(speedData) // 输出文件
 	speedData.Print()          // 打印结果
+	maybeUpload(speedData)     // 交互式上传优选 IP
 	endPrint()                 // 根据情况选择退出方式（针对 Windows）
+}
+
+func readPromptLine() string {
+	line, _ := inputReader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func promptString(name, desc, def string) string {
+	fmt.Printf("%s (%s，默认：%s) : ", name, desc, def)
+	value := readPromptLine()
+	if value == "" {
+		return def
+	}
+	return value
+}
+
+func promptInt(name, desc string, def int) int {
+	s := promptString(name, desc, strconv.Itoa(def))
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		utils.Yellow.Printf("输入无效，已使用默认值：%d\n", def)
+		return def
+	}
+	return n
+}
+
+func promptFloat(name, desc string, def float64) float64 {
+	s := promptString(name, desc, strconv.FormatFloat(def, 'f', -1, 64))
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		utils.Yellow.Printf("输入无效，已使用默认值：%v\n", def)
+		return def
+	}
+	return v
+}
+
+func interactiveConfig() {
+	fmt.Println("选择测速模式（按 ENTER 使用默认值）：")
+	fmt.Println("1. tcping 测速（默认）")
+	fmt.Println("2. httping 测速")
+
+	mode := readPromptLine()
+	switch strings.ToLower(mode) {
+	case "2", "httping":
+		task.Httping = true
+		task.Routines = 100
+	case "", "1", "tcping":
+		task.Httping = false
+		task.Routines = 200
+	default:
+		utils.Yellow.Println("输入无效，已使用默认 tcping 测速。")
+		task.Httping = false
+		task.Routines = 200
+	}
+
+	fmt.Println()
+	fmt.Println("配置测速参数")
+	fmt.Println()
+	task.Routines = promptInt("-n", "测速线程", task.Routines)
+	utils.InputMaxDelay = time.Duration(promptInt("-tl", "平均延迟上限", 200)) * time.Millisecond
+	utils.InputMinDelay = time.Duration(promptInt("-tll", "平均延迟下限", 40)) * time.Millisecond
+	task.MinSpeed = promptFloat("-sl", "下载速度下限", 5)
+
+	if task.Httping {
+		colo := promptString("-cfcolo", "指定地区", "所有地区")
+		if strings.EqualFold(colo, "所有地区") || strings.TrimSpace(colo) == "" {
+			task.HttpingCFColo = ""
+		} else {
+			task.HttpingCFColo = strings.TrimSpace(colo)
+		}
+		task.HttpingCFColomap = task.MapColoMap()
+	}
 }
 
 // 根据情况选择退出方式（针对 Windows）

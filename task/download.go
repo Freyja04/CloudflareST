@@ -17,11 +17,11 @@ import (
 
 const (
 	bufferSize                     = 1024
-	defaultURL                     = "https://cf.xiu2.xyz/url"
+	defaultURL                     = "https://speed.cloudflare.com/__down?bytes=99000000"
 	defaultTimeout                 = 10 * time.Second
 	defaultDisableDownload         = false
 	defaultTestNum                 = 10
-	defaultMinSpeed        float64 = 0.0
+	defaultMinSpeed        float64 = 5.0
 )
 
 var (
@@ -43,7 +43,7 @@ func checkDownloadDefault() {
 	if TestCount <= 0 {
 		TestCount = defaultTestNum
 	}
-	if MinSpeed <= 0.0 {
+	if MinSpeed < 0.0 {
 		MinSpeed = defaultMinSpeed
 	}
 }
