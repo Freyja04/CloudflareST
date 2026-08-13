@@ -160,10 +160,12 @@ func main() {
 	pingData := task.NewPing().Run().FilterDelay().FilterLossRate()
 	// 开始下载测速
 	speedData := task.TestDownloadSpeed(pingData)
-	utils.ExportCsv(speedData) // 输出文件
-	speedData.Print()          // 打印结果
-	maybeUpload(speedData)     // 交互式上传优选 IP
-	endPrint()                 // 根据情况选择退出方式（针对 Windows）
+	if err := utils.ExportCsv(speedData); err != nil { // 输出文件
+		utils.Red.Println(err)
+	}
+	speedData.Print()      // 打印结果
+	maybeUpload(speedData) // 交互式上传优选 IP
+	endPrint()             // 根据情况选择退出方式（针对 Windows）
 }
 
 func readPromptLine() string {

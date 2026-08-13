@@ -27,6 +27,8 @@ const (
 	maxResultRows           = 10000
 )
 
+var uploadHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
 type uploadConfig struct {
 	CFAPIToken     string `json:"cf_api_token"`
 	CFZoneID       string `json:"cf_zone_id"`
@@ -277,8 +279,11 @@ func cloudflareRequest(cfg uploadConfig, method, apiURL string, body []byte) ([]
 	req.Header.Set("Authorization", "Bearer "+cfg.CFAPIToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	return doUploadRequest(req)
+}
+
+func doUploadRequest(req *http.Request) ([]byte, int, error) {
+	resp, err := uploadHTTPClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -417,8 +422,7 @@ func uploadGitHubFile(ips []string) {
 	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	respBody, status, err := doUploadRequest(req)
 	if err != nil {
 		utils.Red.Printf("GitHub 上传失败: %v\n", err)
 		if isNetworkError(err) {
@@ -426,14 +430,8 @@ func uploadGitHubFile(ips []string) {
 		}
 		return
 	}
-	defer resp.Body.Close()
-	respBody, readErr := readLimitedResponse(resp.Body)
-	if readErr != nil {
-		utils.Red.Printf("读取 GitHub 响应失败: %v\n", readErr)
-		return
-	}
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		utils.Red.Printf("GitHub 上传失败，HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	if status != http.StatusOK && status != http.StatusCreated {
+		utils.Red.Printf("GitHub 上传失败，HTTP %d: %s\n", status, strings.TrimSpace(string(respBody)))
 		return
 	}
 
@@ -441,13 +439,12 @@ func uploadGitHubFile(ips []string) {
 }
 
 func checkGitHubConnectivity() error {
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Get(githubAPIBaseURL)
+	req, err := http.NewRequest(http.MethodGet, githubAPIBaseURL, nil)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	return nil
+	_, _, err = doUploadRequest(req)
+	return err
 }
 
 func isNetworkError(err error) bool {
@@ -468,21 +465,15 @@ func getGitHubFile(cfg uploadConfig, path string) (string, string, bool, error) 
 	req.Header.Set("Authorization", "Bearer "+cfg.GitHubToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	body, status, err := doUploadRequest(req)
 	if err != nil {
 		return "", "", false, err
 	}
-	defer resp.Body.Close()
-	body, err := readLimitedResponse(resp.Body)
-	if err != nil {
-		return "", "", false, fmt.Errorf("读取 GitHub 响应失败: %v", err)
-	}
-	if resp.StatusCode == 404 {
+	if status == http.StatusNotFound {
 		return "", "", false, nil
 	}
-	if resp.StatusCode != 200 {
-		return "", "", false, fmt.Errorf("GitHub GET 失败，HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	if status != http.StatusOK {
+		return "", "", false, fmt.Errorf("GitHub GET 失败，HTTP %d: %s", status, strings.TrimSpace(string(body)))
 	}
 
 	var contentResp gitHubContentResponse
