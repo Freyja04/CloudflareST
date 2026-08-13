@@ -150,7 +150,10 @@ func main() {
 	ensureUploadConfigFile()
 
 	if flag.NFlag() == 0 && flag.NArg() == 0 {
-		interactiveConfig()
+		if interactiveConfig() {
+			endPrint()
+			return
+		}
 	}
 
 	// 开始延迟测速 + 过滤延迟/丢包
@@ -197,13 +200,17 @@ func promptFloat(name, desc string, def float64) float64 {
 	return v
 }
 
-func interactiveConfig() {
+func interactiveConfig() bool {
 	fmt.Println("选择测速模式（按 ENTER 使用默认值）：")
 	fmt.Println("1. tcping 测速（默认）")
 	fmt.Println("2. httping 测速")
+	fmt.Println("3. 跳过测速直接上传")
 
 	mode := readPromptLine()
 	switch strings.ToLower(mode) {
+	case "3", "upload":
+		uploadResultFile()
+		return true
 	case "2", "httping":
 		task.Httping = true
 		task.Routines = 100
@@ -233,6 +240,7 @@ func interactiveConfig() {
 		}
 		task.HttpingCFColomap = task.MapColoMap()
 	}
+	return false
 }
 
 // 根据情况选择退出方式（针对 Windows）

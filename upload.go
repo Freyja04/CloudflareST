@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ const (
 	defaultUploadConfigFile = "cfyx.json"
 	defaultGitHubFilePath   = "cfyx.txt"
 	githubAPIBaseURL        = "https://api.github.com"
+	maxAPIResponseSize      = 2 * 1024 * 1024
+	maxResultRows           = 10000
 )
 
 type uploadConfig struct {
@@ -93,7 +96,7 @@ func maybeUpload(speedData utils.DownloadSpeedSet) {
 	}
 
 	fmt.Println()
-	fmt.Println("测速完成，是否上传优选 IP？")
+	fmt.Println("是否上传优选 IP？")
 	fmt.Println("1. 不上传（默认）")
 	fmt.Println("2. Cloudflare DNS")
 	fmt.Println("3. GitHub 文件")
@@ -115,6 +118,75 @@ func maybeUpload(speedData utils.DownloadSpeedSet) {
 		uploadGitHubFile(ips)
 	default:
 		return
+	}
+}
+
+func uploadResultFile() {
+	fp, err := os.Open("result.csv")
+	if os.IsNotExist(err) {
+		utils.Yellow.Println("未找到 result.csv，请先执行测速。")
+		return
+	}
+	if err != nil {
+		utils.Red.Printf("读取 result.csv 失败: %v\n", err)
+		return
+	}
+	defer fp.Close()
+
+	reader := csv.NewReader(fp)
+	if _, err := reader.Read(); err != nil {
+		utils.Red.Printf("解析 result.csv 失败: %v\n", err)
+		return
+	}
+	var speedData utils.DownloadSpeedSet
+	for rowCount := 0; rowCount < maxResultRows; rowCount++ {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			utils.Red.Printf("解析 result.csv 失败: %v\n", err)
+			return
+		}
+		if len(record) == 0 {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(record[0]))
+		if ip == nil {
+			continue
+		}
+		speedData = append(speedData, utils.CloudflareIPData{
+			PingData: &utils.PingData{IP: &net.IPAddr{IP: ip}},
+		})
+	}
+
+	if len(speedData) == 0 {
+		utils.Yellow.Println("result.csv 中没有有效优选 IP，请先执行测速。")
+		return
+	}
+	if _, err := reader.Read(); err == nil {
+		utils.Yellow.Printf("result.csv 仅读取前 %d 行数据。\n", maxResultRows)
+	} else if err != io.EOF {
+		utils.Red.Printf("解析 result.csv 失败: %v\n", err)
+		return
+	}
+	printUploadCandidates(speedData)
+
+	maybeUpload(speedData)
+}
+
+func printUploadCandidates(speedData utils.DownloadSpeedSet) {
+	count := utils.PrintNum
+	if count > len(speedData) {
+		count = len(speedData)
+	}
+	if count <= 0 {
+		return
+	}
+
+	fmt.Println("\n已有优选 IP：")
+	for i := 0; i < count; i++ {
+		fmt.Printf("%d. %s\n", i+1, speedData[i].IP)
 	}
 }
 
@@ -212,11 +284,22 @@ func cloudflareRequest(cfg uploadConfig, method, apiURL string, body []byte) ([]
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := readLimitedResponse(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
 	return data, resp.StatusCode, nil
+}
+
+func readLimitedResponse(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxAPIResponseSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAPIResponseSize {
+		return nil, fmt.Errorf("响应内容超过 %d MB 限制", maxAPIResponseSize/(1024*1024))
+	}
+	return data, nil
 }
 
 func upsertCloudflareDNS(cfg uploadConfig, domain, ip string) error {
@@ -344,7 +427,11 @@ func uploadGitHubFile(ips []string) {
 		return
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := readLimitedResponse(resp.Body)
+	if readErr != nil {
+		utils.Red.Printf("读取 GitHub 响应失败: %v\n", readErr)
+		return
+	}
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		utils.Red.Printf("GitHub 上传失败，HTTP %d: %s\n", resp.StatusCode, strings.TrimSpace(string(respBody)))
 		return
@@ -387,7 +474,10 @@ func getGitHubFile(cfg uploadConfig, path string) (string, string, bool, error) 
 		return "", "", false, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readLimitedResponse(resp.Body)
+	if err != nil {
+		return "", "", false, fmt.Errorf("读取 GitHub 响应失败: %v", err)
+	}
 	if resp.StatusCode == 404 {
 		return "", "", false, nil
 	}
